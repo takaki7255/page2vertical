@@ -1,273 +1,328 @@
 from copy import deepcopy
+from typing import List, Dict, Any
 
-def panel_order_estimater(panels, img_width, img_height):
+
+def panel_order_estimater(panels: List[Dict[str, Any]], img_width: int, img_height: int) -> List[Dict[str, Any]]:
     """
-    コマ順序を推定する（擬似的なコマ領域を用いた齋藤らの手順の再現版）
-    Args:
-        panels (list of dict): コマのバウンディングボックス情報
-            [{'type': 'frame', 'id': '...', 'xmin': '...', 'ymin': '...', 'xmax': '...', 'ymax': '...'}, ...]
-        img_width (int): ページ画像の幅
-        img_height (int): ページ画像の高さ
-    Returns:
-        list: 順序付けされたコマの情報リスト（元のパネル dict に擬似領域情報が付いたもの）
+    見開きページのコマ順序推定（齋藤らの手法をベースに実装）
+
+    - まずノド位置で左右ページに分割
+    - ノドを跨ぐコマは，順序判定に使う擬似コマ領域だけノドでクリップ
+    - 各ページごとに
+        - コマ重なりから擬似コマ領域を生成（中央線で分割）
+        - 「上にコマがない」「左端」「利用可能集合S」「左下からの最近傍」
+          を用いて読み順を決める
+    - 日本の単行本を想定して「右ページ → 左ページ」の順に連結して返す
     """
 
-    # ---- 1. バウンディングボックスの座標を数値に変換 & 擬似コマ領域の初期化 ----
-    panels = deepcopy(panels)  # 元データを壊さない
-    for panel in panels:
-        panel['xmin'] = int(panel['xmin'])
-        panel['ymin'] = int(panel['ymin'])
-        panel['xmax'] = int(panel['xmax'])
-        panel['ymax'] = int(panel['ymax'])
-        panel['center_x'] = (panel['xmin'] + panel['xmax']) // 2
-        panel['center_y'] = (panel['ymin'] + panel['ymax']) // 2
+    # 深いコピーを取って元データを壊さない
+    panels = deepcopy(panels)
 
-        # 擬似的なコマ領域の初期値（最初は元の bbox と同じ）
-        panel['pxmin'] = float(panel['xmin'])
-        panel['pymin'] = float(panel['ymin'])
-        panel['pxmax'] = float(panel['xmax'])
-        panel['pymax'] = float(panel['ymax'])
+    # 数値変換 & 中心座標
+    for p in panels:
+        p["xmin"] = int(p["xmin"])
+        p["ymin"] = int(p["ymin"])
+        p["xmax"] = int(p["xmax"])
+        p["ymax"] = int(p["ymax"])
+        p["center_x"] = (p["xmin"] + p["xmax"]) // 2
+        p["center_y"] = (p["ymin"] + p["ymax"]) // 2
 
-    # ---- 2. バウンディングボックスが重なっている場合に擬似コマ領域を作る ----
-    def resolve_overlaps(panels):
+    gutter_x = img_width / 2.0  # ノド位置（簡易には画像中央）
+
+    # --- 1. ノドで左右ページに分割しつつ，ノド跨ぎコマは擬似領域だけクリップ ---
+    right_panels: List[Dict[str, Any]] = []
+    left_panels: List[Dict[str, Any]] = []
+
+    for p in panels:
+        xmin, xmax = p["xmin"], p["xmax"]
+        ymin, ymax = p["ymin"], p["ymax"]
+        cx = p["center_x"]
+
+        # ページ（right/left）と，そのページ内で使う擬似コマ領域 pxmin/pxmax を決める
+        if xmax <= gutter_x:
+            # 完全に左ページ
+            page = "left"
+            pxmin, pxmax = xmin, xmax
+        elif xmin >= gutter_x:
+            # 完全に右ページ
+            page = "right"
+            pxmin, pxmax = xmin, xmax
+        else:
+            # ノドを跨ぐコマ：中心位置側のページとして扱い，片側だけを擬似領域として使う
+            if cx >= gutter_x:
+                page = "right"
+                pxmin = gutter_x
+                pxmax = xmax
+            else:
+                page = "left"
+                pxmin = xmin
+                pxmax = gutter_x
+
+        # 擬似コマ領域（後で重なり解消 & 順序判定に使用）
+        p["pxmin"] = float(pxmin)
+        p["pymin"] = float(ymin)
+        p["pxmax"] = float(pxmax)
+        p["pymax"] = float(ymax)
+
+        if page == "right":
+            right_panels.append(p)
+        else:
+            left_panels.append(p)
+
+    # --- 2. 擬似コマ領域の重なりを解消する（同一ページ内） ---
+    def resolve_overlaps(page_panels: List[Dict[str, Any]]) -> None:
         """
-        バウンディングボックスが重なっている場合，
-        重なった領域の矩形の中央線で上下または左右に分割して，
-        互いに重ならない擬似的なコマ領域(pxmin, pymin, pxmax, pymax)を作る
+        擬似コマ領域同士が重なっている場合，
+        重なった領域の中央線で上下 or 左右に分割し，
+        最終的に（近似的に）互いに重ならないような擬似コマ領域にする。
         """
         max_iter = 10
-        n = len(panels)
+        n = len(page_panels)
         for _ in range(max_iter):
             changed = False
             for i in range(n):
-                a = panels[i]
+                a = page_panels[i]
                 for j in range(i + 1, n):
-                    b = panels[j]
+                    b = page_panels[j]
 
-                    # 交差矩形を計算
-                    ixmin = max(a['pxmin'], b['pxmin'])
-                    iymin = max(a['pymin'], b['pymin'])
-                    ixmax = min(a['pxmax'], b['pxmax'])
-                    iymax = min(a['pymax'], b['pymax'])
+                    ixmin = max(a["pxmin"], b["pxmin"])
+                    iymin = max(a["pymin"], b["pymin"])
+                    ixmax = min(a["pxmax"], b["pxmax"])
+                    iymax = min(a["pymax"], b["pymax"])
+
                     if ixmin >= ixmax or iymin >= iymax:
                         continue  # 重なりなし
 
-                    # 交差あり → 交差領域の中央線で分割
-                    # どちらが左右/上下かはコマの中心位置から判定する
-                    cx_a = (a['pxmin'] + a['pxmax']) / 2.0
-                    cy_a = (a['pymin'] + a['pymax']) / 2.0
-                    cx_b = (b['pxmin'] + b['pxmax']) / 2.0
-                    cy_b = (b['pymin'] + b['pymax']) / 2.0
+                    # 交差領域の中心
+                    cx_a = (a["pxmin"] + a["pxmax"]) / 2.0
+                    cy_a = (a["pymin"] + a["pymax"]) / 2.0
+                    cx_b = (b["pxmin"] + b["pxmax"]) / 2.0
+                    cy_b = (b["pymin"] + b["pymax"]) / 2.0
 
-                    # 中心の差が横方向に大きければ左右関係，縦方向に大きければ上下関係
+                    # 横方向の差が大きい → 左右に並んでいるとみなして垂直線で分割
+                    # 縦方向の差が大きい → 上下に並んでいるとみなして水平線で分割
                     if abs(cx_a - cx_b) >= abs(cy_a - cy_b):
-                        # 左右に並んでいるとみなして，縦の中央線で分割
+                        # 左右方向の分割
                         xmid = (ixmin + ixmax) / 2.0
                         if cx_a <= cx_b:
                             left, right = a, b
                         else:
                             left, right = b, a
 
-                        # left の右端を xmid まで削る
-                        new_left_pxmax = min(left['pxmax'], xmid)
-                        if left['pxmin'] < new_left_pxmax < left['pxmax']:
-                            left['pxmax'] = new_left_pxmax
+                        new_left_pxmax = min(left["pxmax"], xmid)
+                        if left["pxmin"] < new_left_pxmax < left["pxmax"]:
+                            left["pxmax"] = new_left_pxmax
                             changed = True
 
-                        # right の左端を xmid まで削る
-                        new_right_pxmin = max(right['pxmin'], xmid)
-                        if right['pxmin'] < new_right_pxmin < right['pxmax']:
-                            right['pxmin'] = new_right_pxmin
+                        new_right_pxmin = max(right["pxmin"], xmid)
+                        if right["pxmin"] < new_right_pxmin < right["pxmax"]:
+                            right["pxmin"] = new_right_pxmin
                             changed = True
                     else:
-                        # 上下に並んでいるとみなして，横の中央線で分割
+                        # 上下方向の分割
                         ymid = (iymin + iymax) / 2.0
                         if cy_a <= cy_b:
                             top, bottom = a, b
                         else:
                             top, bottom = b, a
 
-                        # top の下端を ymid まで削る
-                        new_top_pymax = min(top['pymax'], ymid)
-                        if top['pymin'] < new_top_pymax < top['pymax']:
-                            top['pymax'] = new_top_pymax
+                        new_top_pymax = min(top["pymax"], ymid)
+                        if top["pymin"] < new_top_pymax < top["pymax"]:
+                            top["pymax"] = new_top_pymax
                             changed = True
 
-                        # bottom の上端を ymid まで削る
-                        new_bottom_pymin = max(bottom['pymin'], ymid)
-                        if bottom['pymin'] < new_bottom_pymin < bottom['pymax']:
-                            bottom['pymin'] = new_bottom_pymin
+                        new_bottom_pymin = max(bottom["pymin"], ymid)
+                        if bottom["pymin"] < new_bottom_pymin < bottom["pymax"]:
+                            bottom["pymin"] = new_bottom_pymin
                             changed = True
 
             if not changed:
                 break
 
-    resolve_overlaps(panels)
-
-    # ---- 3. 手順 1〜4 による順序付け ----
-
-    ordered_panels = []          # 読み順に並べたコマ
-    undefined_panels = panels[:] # まだ順序が未定義のコマ
-
-    def v_overlap(a, b):
-        """縦方向のオーバーラップ判定（擬似コマ領域で判定）"""
-        return not (a['pymax'] <= b['pymin'] or a['pymin'] >= b['pymax'])
-
-    # 手順1で使う: 「上側に順序が未定義のコマがない」かどうか
-    def has_panel_above(panel, candidates):
-        for other in candidates:
-            if other is panel:
-                continue
-            # 横方向にオーバーラップしている場合だけ「上下関係」を見る
-            if other['pxmax'] <= panel['pxmin'] or other['pxmin'] >= panel['pxmax']:
-                continue
-            # other が panel より「上」にある
-            if other['pymax'] <= panel['pymin']:
-                return True
-        return False
-
-    def find_closest_to_top_right(candidates, current_bottom):
+    # --- 3. 1ページ分の順序付け（論文の手順 1〜4） ---
+    def order_one_page(page_panels: List[Dict[str, Any]],
+                       anchor_right: float) -> List[Dict[str, Any]]:
         """
-        手順1:
-          上側に未定義コマがない集合の中から,
-          擬似コマ領域の右上座標が「切り取り後ページ」の右上に最も近いコマを選ぶ
+        1ページ分のコマだけを受け取り，論文の手順で読み順を決定する。
+        anchor_right:
+            右ページ → img_width
+            左ページ → gutter_x
+            として渡し，そのページ内の「右上」に相当するアンカーとする。
         """
-        if not candidates:
-            return None
-        top_right_x = img_width
-        top_right_y = current_bottom  # ページを current_bottom で切り取ったとみなす
-        closest_panel = None
-        min_distance = float('inf')
-        for panel in candidates:
-            # 擬似コマ領域の右上
-            x = panel['pxmax']
-            y = panel['pymin']
-            distance = (top_right_x - x) ** 2 + (top_right_y - y) ** 2
-            if distance < min_distance:
-                min_distance = distance
-                closest_panel = panel
-        return closest_panel
+        if not page_panels:
+            return []
 
-    def is_leftmost(panel, all_panels):
-        """
-        手順2:
-          「左端」はページの左端ではなく，
-          『縦方向にオーバーラップする範囲で，自分の左側にコマが存在しないこと』
-          と解釈して実装
-        """
-        for other in all_panels:
-            if other is panel:
-                continue
-            # 同じ「段」に属しそうなもの（縦方向にオーバーラップ）
-            if not v_overlap(other, panel):
-                continue
-            # 擬似コマ領域の左辺より左側に別コマがある
-            if other['pxmax'] <= panel['pxmin']:
-                return False
-        return True
+        # 重なり解消（擬似コマ領域）
+        resolve_overlaps(page_panels)
 
-    def find_available_panels(candidates):
-        """
-        手順3:
-          擬似的なコマ領域の下辺より上側かつ左辺より右側に，
-          順序が未定義のコマが存在しないコマの集合 S を作る
-        """
-        if len(candidates) <= 1:
-            return candidates[:]
-        available_panels = []
-        for panel in candidates:
-            is_available = True
+        ordered: List[Dict[str, Any]] = []
+        undefined: List[Dict[str, Any]] = page_panels.copy()
+
+        # 手順1用: 「上側に順序が未定義のコマがあるか？」
+        # → 擬似コマ領域の上辺 pymin より上に，他コマの下辺 pymax があるかどうか
+        def has_panel_above(panel: Dict[str, Any],
+                            candidates: List[Dict[str, Any]]) -> bool:
             for other in candidates:
                 if other is panel:
                     continue
-                # other['pymax'] < panel['pymax'] → panel より「上側」にある
-                # other['pxmax'] > panel['pxmin'] → panel の左辺より右側に領域がある
-                if other['pymax'] < panel['pymax'] and other['pxmax'] > panel['pxmin']:
-                    is_available = False
+                if other["pymax"] <= panel["pymin"]:
+                    return True
+            return False
+
+        # 手順1: アンカーの右上に最も近いコマを探す
+        def find_closest_to_top_right(cands: List[Dict[str, Any]],
+                                      current_bottom: float) -> Dict[str, Any]:
+            tx = anchor_right
+            ty = current_bottom
+            best = None
+            best_dist = float("inf")
+            for p in cands:
+                # 擬似コマ領域の右上座標
+                x = p["pxmax"]
+                y = p["pymin"]
+                d = (tx - x) ** 2 + (ty - y) ** 2
+                if d < best_dist:
+                    best_dist = d
+                    best = p
+            return best
+
+        # 手順2: 「左端」判定
+        # 論文の「横軸左側に別のコマが存在しない」を
+        # 「同一ページ内で，自分より完全に左側にあるコマがない」として実装
+        def is_leftmost(panel: Dict[str, Any],
+                        all_panels: List[Dict[str, Any]]) -> bool:
+            for other in all_panels:
+                if other is panel:
+                    continue
+                if other["pxmax"] <= panel["pxmin"]:
+                    return False
+            return True
+
+        # 手順3: 利用可能なコマ集合S
+        def find_available_panels(cands: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+            """
+            擬似コマ領域の下辺より上側かつ左辺より右側に，
+            未定義コマが存在しないコマの集合Sを返す。
+            （論文本文の条件をそのまま擬似領域で実装）
+            """
+            if len(cands) <= 1:
+                return cands[:]
+
+            available: List[Dict[str, Any]] = []
+            for p in cands:
+                ok = True
+                for other in cands:
+                    if other is p:
+                        continue
+                    if other["pymax"] < p["pymax"] and other["pxmax"] > p["pxmin"]:
+                        ok = False
+                        break
+                if ok:
+                    available.append(p)
+            return available
+
+        # 手順3: 左下に最も近いコマ
+        def find_nearest_panel(panel: Dict[str, Any],
+                               cands: List[Dict[str, Any]]) -> Dict[str, Any]:
+            if not cands:
+                return None
+            bx = panel["pxmin"]
+            by = panel["pymax"]
+            best = None
+            best_dist = float("inf")
+            for other in cands:
+                xs = (other["pxmin"], other["pxmax"])
+                ys = (other["pymin"], other["pymax"])
+                d = min(
+                    (bx - xs[0]) ** 2 + (by - ys[0]) ** 2,
+                    (bx - xs[1]) ** 2 + (by - ys[0]) ** 2,
+                    (bx - xs[0]) ** 2 + (by - ys[1]) ** 2,
+                    (bx - xs[1]) ** 2 + (by - ys[1]) ** 2,
+                )
+                if d < best_dist:
+                    best_dist = d
+                    best = other
+            return best
+
+        current_bottom = 0.0  # 「ここから下が未処理のブロック」とみなすy座標
+
+        while undefined:
+            # 手順1: 上に未定義コマがない集合から右上に最も近いコマを選ぶ
+            top_candidates = [p for p in undefined if not has_panel_above(p, undefined)]
+            if not top_candidates:
+                # 何らかの理由で空になった場合は未定義からフォールバック
+                top_candidates = undefined[:]
+
+            first = find_closest_to_top_right(top_candidates, current_bottom)
+            ordered.append(first)
+            undefined.remove(first)
+            current = first
+
+            # 手順2,3: 同一「段」で左方向へ辿る
+            while True:
+                # 手順2: 左端ならここでブロックを切る
+                if is_leftmost(current, page_panels):
+                    current_bottom = current["pymax"]
                     break
-            if is_available:
-                available_panels.append(panel)
-        return available_panels
 
-    def find_nearest_panel(panel, candidates):
-        """
-        手順3:
-          直前のコマの左下座標に最も近いコマを，
-          候補集合の中から選ぶ（擬似コマ領域の頂点を使用）
-        """
-        if not candidates:
-            return None
-        nearest_panel = None
-        bottom_left_x = panel['pxmin']
-        bottom_left_y = panel['pymax']
-        min_distance = float('inf')
-        for other in candidates:
-            # other の擬似コマ領域の4頂点との距離のうち最小のものを採用
-            xs = (other['pxmin'], other['pxmax'])
-            ys = (other['pymin'], other['pymax'])
-            distances = [
-                (bottom_left_x - xs[0]) ** 2 + (bottom_left_y - ys[0]) ** 2,
-                (bottom_left_x - xs[1]) ** 2 + (bottom_left_y - ys[0]) ** 2,
-                (bottom_left_x - xs[0]) ** 2 + (bottom_left_y - ys[1]) ** 2,
-                (bottom_left_x - xs[1]) ** 2 + (bottom_left_y - ys[1]) ** 2,
-            ]
-            d = min(distances)
-            if d < min_distance:
-                min_distance = d
-                nearest_panel = other
-        return nearest_panel
+                # 手順3: 利用可能集合Sから左下に最も近いコマ
+                cand = find_available_panels(undefined)
+                if not cand:
+                    current_bottom = current["pymax"]
+                    break
 
-    current_bottom = 0.0  # 「ここでページを切る」とみなす y 座標
+                nxt = find_nearest_panel(current, cand)
+                if nxt is None:
+                    current_bottom = current["pymax"]
+                    break
 
-    while undefined_panels:
-        # --- 手順1: ブロックの最初のコマを選ぶ ---
-        # 上側に順序が未定義のコマがないものだけを候補にする
-        top_candidates = [p for p in undefined_panels if not has_panel_above(p, undefined_panels)]
-        if not top_candidates:
-            # 何らかの理由で上側条件を満たすものがない場合は，未定義コマ全体から選ぶ
-            top_candidates = undefined_panels[:]
+                ordered.append(nxt)
+                undefined.remove(nxt)
+                current = nxt
 
-        next_panel = find_closest_to_top_right(top_candidates, current_bottom)
-        ordered_panels.append(next_panel)
-        undefined_panels.remove(next_panel)
+        return ordered
 
-        # --- 同じ「段」の左方向へ進んでいく部分 (手順2,3) ---
-        while True:
-            # 手順2: 「左側にコマがない」なら左端 → ここでページを切って次のブロックへ
-            if is_leftmost(next_panel, panels):
-                current_bottom = next_panel['pymax']
-                break
+    # --- 4. 右ページ → 左ページの順で結合して返す ---
+    ordered_all: List[Dict[str, Any]] = []
+    # 右ページ（日本語マンガは右から）
+    ordered_all.extend(order_one_page(right_panels, anchor_right=img_width))
+    # 左ページ
+    ordered_all.extend(order_one_page(left_panels, anchor_right=gutter_x))
 
-            # 手順3: 利用可能集合 S を作り，その中から次のコマを選ぶ
-            candidates = find_available_panels(undefined_panels)
-            if not candidates:
-                # 利用可能な候補が無ければ，この段はここで終わり
-                current_bottom = next_panel['pymax']
-                break
-
-            new_panel = find_nearest_panel(next_panel, candidates)
-            if new_panel is None:
-                current_bottom = next_panel['pymax']
-                break
-
-            ordered_panels.append(new_panel)
-            undefined_panels.remove(new_panel)
-            next_panel = new_panel
-
-    return ordered_panels
+    return ordered_all
 
 
-if __name__ == '__main__':
-    # テストデータ
-    data = [
-        {'type': 'frame', 'id': '00000009', 'xmin': '899', 'ymin': '585', 'xmax': '1170', 'ymax': '1085'},
-        {'type': 'frame', 'id': '0000000c', 'xmin': '2',   'ymin': '0',   'xmax': '826',  'ymax': '513'},
-        {'type': 'frame', 'id': '0000000e', 'xmin': '72',  'ymin': '516', 'xmax': '743',  'ymax': '1101'},
-        {'type': 'frame', 'id': '00000014', 'xmin': '906', 'ymin': '95',  'xmax': '1575', 'ymax': '576'},
-        {'type': 'frame', 'id': '0000001d', 'xmin': '1167','ymin': '588', 'xmax': '1580', 'ymax': '1090'}
+if __name__ == "__main__":
+    # あなたが出してくれたテスト例2つをざっくり確認する用
+
+    data1 = [
+        {'type': 'frame', 'id': '00000014', 'xmin': '906',  'ymin': '95',  'xmax': '1575', 'ymax': '576'},
+        {'type': 'frame', 'id': '00000009', 'xmin': '899',  'ymin': '585', 'xmax': '1170', 'ymax': '1085'},
+        {'type': 'frame', 'id': '0000001d', 'xmin': '1167', 'ymin': '588', 'xmax': '1580', 'ymax': '1090'},
+        {'type': 'frame', 'id': '0000000c', 'xmin': '2',    'ymin': '0',   'xmax': '826',  'ymax': '513'},
+        {'type': 'frame', 'id': '0000000e', 'xmin': '72',   'ymin': '516', 'xmax': '743',  'ymax': '1101'},
     ]
-    img_w = max(int(p['xmax']) for p in data)
-    img_h = max(int(p['ymax']) for p in data)
 
-    import pprint
-    pprint.pp(panel_order_estimater(data, img_w, img_h))
+    data2 = [
+        {'type': 'frame', 'id': '0001289a', 'xmin': '893', 'ymin': '0',   'xmax': '1615', 'ymax': '428'},
+        {'type': 'frame', 'id': '0001287e', 'xmin': '1307','ymin': '436', 'xmax': '1613', 'ymax': '1098'},
+        {'type': 'frame', 'id': '00012880', 'xmin': '1467','ymin': '375', 'xmax': '1619', 'ymax': '656'},
+        {'type': 'frame', 'id': '00012885', 'xmin': '1081','ymin': '436', 'xmax': '1294', 'ymax': '1098'},
+        {'type': 'frame', 'id': '0001288a', 'xmin': '891', 'ymin': '433', 'xmax': '1073', 'ymax': '1092'},
+        {'type': 'frame', 'id': '00012881', 'xmin': '36',  'ymin': '0',   'xmax': '751',  'ymax': '489'},
+        {'type': 'frame', 'id': '00012897', 'xmin': '36',  'ymin': '390', 'xmax': '756',  'ymax': '1169'},
+    ]
+
+    # 画像サイズはざっくり最大値に合わせておく
+    def img_size(ds):
+        w = max(int(d["xmax"]) for d in ds)
+        h = max(int(d["ymax"]) for d in ds)
+        return w, h
+
+    for name, ds in [("data1", data1), ("data2", data2)]:
+        w, h = img_size(ds)
+        ordered = panel_order_estimater(ds, w, h)
+        print(name, "→", [p["id"] for p in ordered])
+        # 期待:
+        # data1 → ['00000014', '0000001d', '00000009', '0000000c', '0000000e']
+        # data2 → ['0001289a', '00012880', '0001287e', '00012885', '0001288a', '00012881', '00012897']
