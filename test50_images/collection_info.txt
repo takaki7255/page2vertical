@@ -1,0 +1,58 @@
+Collection Info
+==================================================
+Total images: 50
+Min panels: 1
+Max panels: No limit
+Seed: 42
+
+Images:
+  EverydayOsakanaChan_040.jpg - 13 panels, 1654x1170
+  AosugiruHaru_078.jpg - 10 panels, 1654x1170
+  MagicStarGakuin_007.jpg - 11 panels, 1654x1170
+  KyokugenCyclone_009.jpg - 5 panels, 1654x1170
+  KarappoHighschool_048.jpg - 15 panels, 1654x1170
+  Hamlet_040.jpg - 13 panels, 1654x1170
+  EienNoWith_118.jpg - 12 panels, 1654x1170
+  TsubasaNoKioku_072.jpg - 12 panels, 1654x1170
+  Donburakokko_042.jpg - 8 panels, 1654x1170
+  YukiNoFuruMachi_030.jpg - 17 panels, 1654x1170
+  ReveryEarth_096.jpg - 2 panels, 1654x1170
+  AppareKappore_089.jpg - 10 panels, 1654x1170
+  AppareKappore_055.jpg - 9 panels, 1654x1170
+  DualJustice_068.jpg - 11 panels, 1654x1170
+  Jyovolley_061.jpg - 10 panels, 1654x1170
+  KimiHaBokuNoTaiyouDa_083.jpg - 9 panels, 1654x1170
+  TasogareTsushin_044.jpg - 10 panels, 1654x1170
+  YumeiroCooking_031.jpg - 14 panels, 1654x1170
+  AppareKappore_001.jpg - 4 panels, 1654x1170
+  UnbalanceTokyo_051.jpg - 10 panels, 1654x1170
+  JangiriPonpon_007.jpg - 15 panels, 1654x1170
+  TsubasaNoKioku_065.jpg - 9 panels, 1654x1170
+  ReveryEarth_057.jpg - 12 panels, 1654x1170
+  KarappoHighschool_002.jpg - 9 panels, 1654x1170
+  SaladDays_vol01_083.jpg - 14 panels, 1654x1170
+  YukiNoFuruMachi_010.jpg - 10 panels, 1654x1170
+  MagicStarGakuin_062.jpg - 9 panels, 1654x1170
+  AisazuNihaIrarenai_030.jpg - 15 panels, 1654x1170
+  HarukaRefrain_008.jpg - 11 panels, 1654x1170
+  RinToSiteSippuNoNaka_009.jpg - 8 panels, 1654x1170
+  MutekiBoukenSyakuma_048.jpg - 7 panels, 1654x1170
+  MagicStarGakuin_056.jpg - 10 panels, 1654x1170
+  HaruichibanNoFukukoro_034.jpg - 10 panels, 1654x1170
+  Jyovolley_005.jpg - 13 panels, 1654x1170
+  MukoukizuNoChonbo_049.jpg - 9 panels, 1654x1170
+  EienNoWith_113.jpg - 10 panels, 1654x1170
+  DualJustice_052.jpg - 11 panels, 1654x1170
+  ParaisoRoad_062.jpg - 12 panels, 1654x1170
+  EienNoWith_022.jpg - 14 panels, 1654x1170
+  Ningyoushi_056.jpg - 10 panels, 1654x1170
+  Nekodama_019.jpg - 5 panels, 1654x1170
+  YumeiroCooking_059.jpg - 10 panels, 1654x1170
+  MAD_STONE_004.jpg - 7 panels, 1654x1170
+  BEMADER_P_091.jpg - 7 panels, 1654x1170
+  SamayoeruSyonenNiJunaiWo_069.jpg - 11 panels, 1654x1170
+  TouyouKidan_048.jpg - 14 panels, 1654x1170
+  GakuenNoise_088.jpg - 13 panels, 1654x1170
+  ParaisoRoad_038.jpg - 8 panels, 1654x1170
+  Count3DeKimeteAgeru_095.jpg - 11 panels, 1654x1170
+  UltraEleven_006.jpg - 12 panels, 1654x1170

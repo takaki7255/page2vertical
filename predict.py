@@ -27,12 +27,12 @@ import cv2
 
 
 def create_maskrcnn(num_classes=2, trainable_backbone_layers=3):
-    """Mask R-CNNモデルを作成"""
-    from torchvision.models.detection import maskrcnn_resnet50_fpn_v2
+    """Mask R-CNNモデルを作成（学習時と同じmaskrcnn_resnet50_fpn v1を使用）"""
+    from torchvision.models.detection import maskrcnn_resnet50_fpn
     from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
     from torchvision.models.detection.mask_rcnn import MaskRCNNPredictor
     
-    model = maskrcnn_resnet50_fpn_v2(
+    model = maskrcnn_resnet50_fpn(
         weights=None,
         trainable_backbone_layers=trainable_backbone_layers
     )

@@ -25,7 +25,7 @@ from typing import List, Dict, Optional
 
 
 # デフォルトのManga109ディレクトリ
-DEFAULT_MANGA_DIR = "/Users/x20047xx/研究室/manga/Manga109_released_2023_12_07"
+DEFAULT_MANGA_DIR = "./../manga109/"
 
 
 def parse_manga109_xml(xml_path: str) -> Dict:
