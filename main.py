@@ -42,12 +42,13 @@ except ImportError:
 
 
 # ================== 設定 ==================
-DEFAULT_PANEL_MODEL_PATH = "./instance_models/mask2former_gray_20251209_170026/mask2former_gray_best.pt"
-DEFAULT_PANEL_MODEL_TYPE = "mask2former"
+DEFAULT_PANEL_MODEL_PATH = "./instance_models/mask2former_gray_best.pt"
+DEFAULT_PANEL_MODEL_TYPE = "mask2former"  # 'maskrcnn' or 'mask2former'
 DEFAULT_INPUT_TYPE = "3ch"
 DEFAULT_IMG_SIZE = (384, 512)
 DEFAULT_SCORE_THRESHOLD = 0.5
-DEFAULT_PANEL_MARGIN = 20  # コマ間の余白（ピクセル）
+DEFAULT_PANEL_MARGIN_RATIO = 0.3  # コマ間の余白（画像横幅に対する比率）
+DEFAULT_MIN_WIDTH_RATIO = 0.8  # 小さいコマの最小幅比率
 DEFAULT_BALLOON_MODEL_PATH = "./balloon_models/real3000_dataset-unet-01.pt"
 DEFAULT_BALLOON_IMG_SIZE = (384, 512)  # (H, W)
 
@@ -280,9 +281,11 @@ class MangaPage2Vertical:
         input_type: str = DEFAULT_INPUT_TYPE,
         img_size: Tuple[int, int] = DEFAULT_IMG_SIZE,
         score_threshold: float = DEFAULT_SCORE_THRESHOLD,
-        panel_margin: int = DEFAULT_PANEL_MARGIN,
+        panel_margin_ratio: float = DEFAULT_PANEL_MARGIN_RATIO,
+        min_width_ratio: float = DEFAULT_MIN_WIDTH_RATIO,
         smooth_mask: bool = False,
         smooth_kernel_size: int = 5,
+        balloon_dilate: int = 2,
         device: Optional[torch.device] = None
     ):
         # デバイス設定
@@ -303,9 +306,11 @@ class MangaPage2Vertical:
         self.input_type = input_type
         self.img_size = img_size
         self.score_threshold = score_threshold
-        self.panel_margin = panel_margin
+        self.panel_margin_ratio = panel_margin_ratio
+        self.min_width_ratio = min_width_ratio
         self.smooth_mask = smooth_mask
         self.smooth_kernel_size = smooth_kernel_size
+        self.balloon_dilate = balloon_dilate
         
         # コマ検出モデルの読み込み
         self._load_panel_model(panel_model_path, panel_model_type)
@@ -568,6 +573,14 @@ class MangaPage2Vertical:
             balloons: 吹き出し情報のリスト
                 [{'image': np.ndarray, 'mask': np.ndarray, 'bbox': (x, y, w, h)}, ...]
         """
+        # マスクの膨張処理（輪郭線の途切れ防止）
+        if self.balloon_dilate > 0:
+            kernel = cv2.getStructuringElement(
+                cv2.MORPH_ELLIPSE, 
+                (self.balloon_dilate * 2 + 1, self.balloon_dilate * 2 + 1)
+            )
+            balloon_mask = cv2.dilate(balloon_mask, kernel, iterations=1)
+        
         # 連結成分分析で個々の吹き出しを分離
         num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(balloon_mask)
         
@@ -640,7 +653,8 @@ class MangaPage2Vertical:
         self,
         panels: List[np.ndarray],
         margin: int = None,
-        gap_ratio_w: float = 0.56,  # 画像の横幅に対するコマ間余白の比
+        gap_ratio_w: float = None,  # 画像の横幅に対するコマ間余白の比
+        min_width_ratio: float = None,  # 小さいコマを出力幅に対してリサイズ
         background_color: Tuple[int, int, int] = (255, 255, 255)
     ) -> np.ndarray:
         """
@@ -649,7 +663,8 @@ class MangaPage2Vertical:
         Args:
             panels: コマ画像のリスト（読み順）
             margin: コマ間の余白（Noneの場合はgap_ratio_wから自動計算）
-            gap_ratio_w: 画像の横幅に対するコマ間余白の比（デフォルト: 0.56）
+            gap_ratio_w: 画像の横幅に対するコマ間余白の比（デフォルト: 0.08）
+            min_width_ratio: 小さいコマをリサイズする最小幅の比率（デフォルト: 0.8）
             background_color: 背景色（BGR）
         
         Returns:
@@ -657,9 +672,32 @@ class MangaPage2Vertical:
         """
         if not panels:
             return np.zeros((100, 100, 3), dtype=np.uint8)
+        
+        # デフォルト値をインスタンス変数から取得
+        if gap_ratio_w is None:
+            gap_ratio_w = self.panel_margin_ratio
+        if min_width_ratio is None:
+            min_width_ratio = self.min_width_ratio
 
         # 出力画像の横幅（最大コマ幅）
         max_width = max(panel.shape[1] for panel in panels)
+        
+        # 小さいコマをリサイズ（横幅が max_width * min_width_ratio 未満のコマ）
+        min_width_threshold = max_width * min_width_ratio
+        resized_panels = []
+        for panel in panels:
+            h, w = panel.shape[:2]
+            if w < min_width_threshold:
+                # 横幅を max_width * min_width_ratio にリサイズ（アスペクト比維持）
+                target_width = int(max_width * min_width_ratio)
+                scale = target_width / w
+                target_height = int(h * scale)
+                resized_panel = cv2.resize(panel, (target_width, target_height), interpolation=cv2.INTER_LANCZOS4)
+                resized_panels.append(resized_panel)
+            else:
+                resized_panels.append(panel)
+        
+        panels = resized_panels
 
         # margin が指定されていなければ、横幅に対する比から自動計算
         if margin is None:
@@ -939,7 +977,11 @@ class MangaPage2Vertical:
         
         # 縦読み漫画を作成
         if all_panels:
-            vertical_manga = self.create_vertical_manga(all_panels)
+            vertical_manga = self.create_vertical_manga(
+                all_panels,
+                gap_ratio_w=self.panel_margin_ratio,
+                min_width_ratio=self.min_width_ratio
+            )
             output_path = image_output_dir / "vertical.png"
             cv2.imwrite(str(output_path), vertical_manga)
             print(f"  Saved vertical manga: {output_path}")
@@ -1001,8 +1043,10 @@ def main():
     # 処理パラメータ
     parser.add_argument('--score-threshold', type=float, default=DEFAULT_SCORE_THRESHOLD,
                         help='Score threshold for panel detection')
-    parser.add_argument('--panel-margin', type=int, default=DEFAULT_PANEL_MARGIN,
-                        help='Margin between panels in vertical manga')
+    parser.add_argument('--panel-margin-ratio', type=float, default=DEFAULT_PANEL_MARGIN_RATIO,
+                        help='Margin between panels as ratio of image width (default: 0.08)')
+    parser.add_argument('--min-width-ratio', type=float, default=DEFAULT_MIN_WIDTH_RATIO,
+                        help='Minimum panel width as ratio of max width (default: 0.8)')
     parser.add_argument('--img-size', type=int, nargs=2, default=list(DEFAULT_IMG_SIZE),
                         help='Model input size (H W)')
     
@@ -1011,6 +1055,10 @@ def main():
                         help='Enable morphological smoothing for panel masks')
     parser.add_argument('--smooth-kernel-size', type=int, default=5,
                         help='Kernel size for mask smoothing (default: 5)')
+    
+    # 吹き出しマスク膨張設定
+    parser.add_argument('--balloon-dilate', type=int, default=2,
+                        help='Dilation size for balloon mask to prevent cutoff (0 to disable, default: 2)')
     
     args = parser.parse_args()
     
@@ -1023,9 +1071,11 @@ def main():
         input_type=args.input_type,
         img_size=tuple(args.img_size),
         score_threshold=args.score_threshold,
-        panel_margin=args.panel_margin,
+        panel_margin_ratio=args.panel_margin_ratio,
+        min_width_ratio=args.min_width_ratio,
         smooth_mask=args.smooth_mask,
-        smooth_kernel_size=args.smooth_kernel_size
+        smooth_kernel_size=args.smooth_kernel_size,
+        balloon_dilate=args.balloon_dilate
     )
     
     # 入力画像のリストを取得

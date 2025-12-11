@@ -1,20 +1,20 @@
 """
 吹き出し配置エディタ - Streamlit UI
 
-縦並び漫画画像に吹き出しをドラッグ&ドロップで配置するUIです。
+縦並び漫画画像に吹き出しを配置するUIです。
 
 使用方法:
     streamlit run balloon_editor.py
 """
 
 import streamlit as st
-from streamlit_drawable_canvas import st_canvas
+from streamlit_image_coordinates import streamlit_image_coordinates
 from PIL import Image
 import numpy as np
 import json
 from pathlib import Path
-import cv2
-import os
+import io
+import base64
 
 
 def load_output_folder(folder_path: str):
@@ -76,12 +76,15 @@ def get_output_folders(base_dir: str):
     return folders
 
 
-def composite_balloons(base_image: Image.Image, placements: list) -> Image.Image:
+def composite_balloons(base_image: Image.Image, placements: list, balloons: list) -> Image.Image:
     """吹き出しを配置した画像を合成"""
     result = base_image.copy()
     
     for placement in placements:
-        balloon_img = placement["image"]
+        balloon_idx = placement["balloon_idx"]
+        if balloon_idx >= len(balloons):
+            continue
+        balloon_img = balloons[balloon_idx]["image"]
         x = placement["x"]
         y = placement["y"]
         scale = placement.get("scale", 1.0)
@@ -90,7 +93,8 @@ def composite_balloons(base_image: Image.Image, placements: list) -> Image.Image
         if scale != 1.0:
             new_w = int(balloon_img.width * scale)
             new_h = int(balloon_img.height * scale)
-            balloon_img = balloon_img.resize((new_w, new_h), Image.LANCZOS)
+            if new_w > 0 and new_h > 0:
+                balloon_img = balloon_img.resize((new_w, new_h), Image.LANCZOS)
         
         # 配置（中心基準）
         paste_x = int(x - balloon_img.width / 2)
@@ -182,7 +186,7 @@ def main():
                     ):
                         st.session_state.selected_balloon = i
                     
-                    st.image(thumb, caption=f"#{i}", use_container_width=True)
+                    st.image(thumb, caption=f"#{i}", width='stretch')
             
             st.divider()
             
@@ -190,7 +194,7 @@ def main():
             if st.session_state.selected_balloon is not None:
                 idx = st.session_state.selected_balloon
                 st.success(f"選択中: #{idx}")
-                st.image(balloons[idx]["image"], use_container_width=True)
+                st.image(balloons[idx]["image"], width='stretch')
                 
                 # スケール調整
                 scale = st.slider("サイズ", 0.5, 2.0, 1.0, 0.1, key="balloon_scale")
@@ -227,83 +231,60 @@ def main():
     with col_main:
         st.subheader("縦並び画像（クリックで配置）")
         
-        # 画像サイズを調整（表示用）
-        display_height = 800
-        aspect_ratio = vertical_image.width / vertical_image.height
-        display_width = int(display_height * aspect_ratio)
-        
         # 現在の配置を反映した画像を作成
-        placements_with_images = []
-        for p in st.session_state.placements:
-            balloon_img = balloons[p["balloon_idx"]]["image"]
-            placements_with_images.append({
-                "image": balloon_img,
-                "x": p["x"],
-                "y": p["y"],
-                "scale": p.get("scale", 1.0)
-            })
+        preview_image = composite_balloons(vertical_image, st.session_state.placements, balloons)
         
-        preview_image = composite_balloons(vertical_image, placements_with_images)
+        # 画像をクリック可能にして表示
+        # 表示幅を固定（元画像のサイズに応じてスケーリング）
+        display_width = min(800, preview_image.width)
+        scale_factor = display_width / preview_image.width
         
-        # 表示用にリサイズ
-        preview_resized = preview_image.resize((display_width, display_height), Image.LANCZOS)
-        
-        # Canvas（クリック検出用）
-        canvas_result = st_canvas(
-            fill_color="rgba(255, 0, 0, 0.3)",
-            stroke_width=2,
-            stroke_color="#FF0000",
-            background_image=preview_resized,
-            update_streamlit=True,
-            height=display_height,
-            width=display_width,
-            drawing_mode="point",
-            point_display_radius=5,
-            key="canvas",
-        )
-        
-        # クリック位置を取得
-        if canvas_result.json_data is not None:
-            objects = canvas_result.json_data.get("objects", [])
+        if st.session_state.selected_balloon is not None:
+            st.info(f"🎈 吹き出し #{st.session_state.selected_balloon} を選択中 - 画像をクリックして配置")
             
-            if objects and st.session_state.selected_balloon is not None:
-                # 最新のクリック位置を取得
-                last_obj = objects[-1]
-                click_x = last_obj.get("left", 0)
-                click_y = last_obj.get("top", 0)
-                
-                # 表示サイズから元サイズへの変換
-                scale_x = vertical_image.width / display_width
-                scale_y = vertical_image.height / display_height
-                
-                real_x = click_x * scale_x
-                real_y = click_y * scale_y
+            # クリック可能な画像表示
+            coords = streamlit_image_coordinates(
+                preview_image,
+                key=f"clickable_image_{st.session_state.current_folder}_{len(st.session_state.placements)}",
+                width=display_width
+            )
+            
+            if coords is not None:
+                # クリック座標を元の画像座標に変換
+                click_x = int(coords["x"] / scale_factor)
+                click_y = int(coords["y"] / scale_factor)
                 
                 # 新しい配置を追加
                 new_placement = {
                     "balloon_idx": st.session_state.selected_balloon,
-                    "x": real_x,
-                    "y": real_y,
+                    "x": click_x,
+                    "y": click_y,
                     "scale": scale
                 }
-                
-                # 重複チェック（同じ位置への配置を防ぐ）
-                is_duplicate = False
-                for p in st.session_state.placements:
-                    if (abs(p["x"] - real_x) < 10 and 
-                        abs(p["y"] - real_y) < 10 and
-                        p["balloon_idx"] == st.session_state.selected_balloon):
-                        is_duplicate = True
-                        break
-                
-                if not is_duplicate:
-                    st.session_state.placements.append(new_placement)
-                    st.rerun()
+                st.session_state.placements.append(new_placement)
+                st.success(f"✅ 配置しました: ({click_x}, {click_y})")
+                st.rerun()
+        else:
+            # 吹き出し未選択時は通常表示
+            st.image(preview_image, width='stretch')
+            st.info("👈 左のサイドバーから吹き出しを選択し、画像をクリックして配置")
     
     with col_orig:
+        # オリジナル画像を固定表示（スクロールしても追従）
+        st.markdown("""
+        <style>
+        [data-testid="column"]:last-child {
+            position: sticky;
+            top: 0;
+            height: fit-content;
+            align-self: flex-start;
+        }
+        </style>
+        """, unsafe_allow_html=True)
+        
         st.subheader("オリジナル画像（参照用）")
         if original_image:
-            st.image(original_image, use_container_width=True)
+            st.image(original_image, width='stretch')
         else:
             st.warning("オリジナル画像がありません")
     
@@ -314,13 +295,13 @@ def main():
     with col_save1:
         if st.button("💾 画像を保存", type="primary"):
             # 最終画像を生成
-            final_image = composite_balloons(vertical_image, placements_with_images)
+            final_image = composite_balloons(vertical_image, st.session_state.placements, balloons)
             
             # PNG形式で保存
             save_path = folder_path / "vertical_with_balloons.png"
             final_image.save(save_path)
             
-            st.success(f"保存しました: {save_path}")
+            st.success(f"✅ 保存しました: {save_path}")
     
     with col_save2:
         if st.button("📄 配置情報を保存"):
@@ -334,7 +315,7 @@ def main():
             with open(json_path, "w", encoding="utf-8") as f:
                 json.dump(save_data, f, ensure_ascii=False, indent=2)
             
-            st.success(f"保存しました: {json_path}")
+            st.success(f"✅ 保存しました: {json_path}")
     
     with col_save3:
         # 配置情報の読み込み
@@ -344,6 +325,7 @@ def main():
                 with open(json_path, "r", encoding="utf-8") as f:
                     save_data = json.load(f)
                 st.session_state.placements = save_data.get("placements", [])
+                st.success("✅ 読み込みました")
                 st.rerun()
 
 
