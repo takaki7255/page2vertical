@@ -26,8 +26,11 @@ from predict import (
     predict_mask2former,
 )
 
+# mask2former_grayモデルをインポート
+from models.mask2former_gray import create_mask2former_gray
+
 # panel_order_estimater.pyからインポート
-from panel_order_estimator import panel_order_estimater
+from panel_order_estimator import panel_order_estimater, panel_order_estimater_single_page
 
 # Lamaインペイント用
 try:
@@ -39,8 +42,8 @@ except ImportError:
 
 
 # ================== 設定 ==================
-DEFAULT_PANEL_MODEL_PATH = "./instance_models/maskrcnn_gray_20251201_121013/maskrcnn_gray_best.pt"
-DEFAULT_PANEL_MODEL_TYPE = "maskrcnn"
+DEFAULT_PANEL_MODEL_PATH = "./instance_models/mask2former_gray_20251209_170026/mask2former_gray_best.pt"
+DEFAULT_PANEL_MODEL_TYPE = "mask2former"
 DEFAULT_INPUT_TYPE = "3ch"
 DEFAULT_IMG_SIZE = (384, 512)
 DEFAULT_SCORE_THRESHOLD = 0.5
@@ -324,17 +327,42 @@ class MangaPage2Vertical:
         if model_type == 'maskrcnn':
             self.panel_model = create_maskrcnn(num_classes=2)
             self.model_name = None
+            
+            # 重み読み込み
+            state_dict = torch.load(model_path, map_location=self.device, weights_only=True)
+            
+            # state_dictのキーに "model." プレフィックスがある場合は削除
+            if any(k.startswith('model.') for k in state_dict.keys()):
+                state_dict = {k.replace('model.', '', 1): v for k, v in state_dict.items()}
+            
+            self.panel_model.load_state_dict(state_dict)
         else:  # mask2former
-            self.panel_model, self.model_name = create_mask2former(num_classes=2)
+            # Mask2FormerGrayモデルを作成（num_labels=1はコマクラスのみ）
+            self.panel_model = create_mask2former_gray(num_labels=1)
+            self.model_name = 'mask2former_gray'
+            
+            # 重み読み込み
+            state_dict = torch.load(model_path, map_location=self.device, weights_only=True)
+            
+            # state_dictのキーに "model.model." プレフィックスがある場合は "model." に変換
+            # （Mask2FormerGrayはself.modelにMask2FormerForUniversalSegmentationを持つ）
+            if any(k.startswith('model.model.') for k in state_dict.keys()):
+                # 既にmodel.model.プレフィックスがある場合はそのまま
+                pass
+            elif any(k.startswith('model.') for k in state_dict.keys()):
+                # model.プレフィックスがある場合、Mask2FormerGrayの構造に合わせる
+                # model.xxx -> model.model.xxx (Mask2FormerGrayのself.model用)
+                # ただしprocessor関連は除く
+                new_state_dict = {}
+                for k, v in state_dict.items():
+                    if k.startswith('model.'):
+                        new_state_dict['model.' + k] = v
+                    else:
+                        new_state_dict[k] = v
+                state_dict = new_state_dict
+            
+            self.panel_model.load_state_dict(state_dict, strict=False)
         
-        # 重み読み込み
-        state_dict = torch.load(model_path, map_location=self.device, weights_only=True)
-        
-        # state_dictのキーに "model." プレフィックスがある場合は削除
-        if any(k.startswith('model.') for k in state_dict.keys()):
-            state_dict = {k.replace('model.', '', 1): v for k, v in state_dict.items()}
-        
-        self.panel_model.load_state_dict(state_dict)
         self.panel_model = self.panel_model.to(self.device)
         self.panel_model.eval()
         
@@ -400,26 +428,80 @@ class MangaPage2Vertical:
         """
         orig_h, orig_w = image.shape[:2]
         
-        # 一時ファイルとして保存（load_imageがファイルパスを必要とするため）
-        if image_path is None:
-            temp_path = os.path.join(tempfile.gettempdir(), "temp_panel_detect.jpg")
-            cv2.imwrite(temp_path, image)
-            image_path = temp_path
-        
-        # 画像読み込みと前処理
-        image_tensor, _, _ = load_image(
-            image_path, self.img_size, self.input_type
-        )
-        
-        # 予測
         if self.panel_model_type == 'maskrcnn':
+            # MaskRCNNの場合は従来のload_imageを使用
+            if image_path is None:
+                temp_path = os.path.join(tempfile.gettempdir(), "temp_panel_detect.jpg")
+                cv2.imwrite(temp_path, image)
+                image_path = temp_path
+            
+            image_tensor, _, _ = load_image(
+                image_path, self.img_size, self.input_type
+            )
+            
             masks, scores, boxes = predict_maskrcnn(
                 self.panel_model, image_tensor, self.device, self.score_threshold
             )
         else:
-            masks, scores, boxes = predict_mask2former(
-                self.panel_model, image_tensor, self.device, self.model_name
+            # Mask2FormerGrayの場合はpredict_instancesを使用
+            from torchvision import transforms
+            from PIL import Image as PILImage
+            
+            # BGRからグレースケールに変換
+            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+            pil_gray = PILImage.fromarray(gray)
+            
+            # リサイズとテンソル化
+            resize = transforms.Resize(self.img_size)
+            to_tensor = transforms.ToTensor()
+            
+            pil_gray = resize(pil_gray)
+            pixel_values = to_tensor(pil_gray).unsqueeze(0).to(self.device)  # (1, 1, H, W)
+            
+            # predict_instancesを呼び出し
+            instance_maps, instance_infos = self.panel_model.predict_instances(
+                pixel_values, threshold=self.score_threshold
             )
+            
+            # 結果を変換
+            pred_map = instance_maps[0]
+            pred_info = instance_infos[0]
+            
+            # numpy配列に変換
+            if isinstance(pred_map, torch.Tensor):
+                pred_map_np = pred_map.cpu().numpy()
+            else:
+                pred_map_np = np.array(pred_map)
+            
+            # インスタンスIDからマスク、スコア、バウンディングボックスを抽出
+            masks = []
+            scores = []
+            boxes = []
+            
+            # instance_infoからスコアを取得するためのマッピング
+            id_to_score = {}
+            for info in pred_info:
+                inst_id = info.get('id', -1)
+                score = info.get('score', 1.0)
+                id_to_score[inst_id] = score
+            
+            # 各インスタンスを処理
+            unique_ids = np.unique(pred_map_np)
+            unique_ids = unique_ids[unique_ids >= 0]  # 背景(-1)を除外
+            
+            for inst_id in unique_ids:
+                mask = (pred_map_np == inst_id).astype(np.uint8)
+                masks.append(mask)
+                scores.append(id_to_score.get(int(inst_id), 1.0))
+                
+                # マスクからバウンディングボックスを計算
+                ys, xs = np.where(mask > 0)
+                if len(xs) > 0 and len(ys) > 0:
+                    x1, x2 = xs.min(), xs.max()
+                    y1, y2 = ys.min(), ys.max()
+                    boxes.append([x1, y1, x2, y2])
+                else:
+                    boxes.append([0, 0, 0, 0])
         
         # マスクを元画像サイズにリサイズ
         resized_masks = []
@@ -458,7 +540,7 @@ class MangaPage2Vertical:
         return resized_masks, panels_info
     
     def estimate_panel_order(self, panels_info: List[Dict], img_width: int, img_height: int) -> List[Dict]:
-        """コマの読み順を推定"""
+        """コマの読み順を推定（単一ページ用）"""
         # panel_order_estimater用にデータを整形
         panels_for_order = []
         for panel in panels_info:
@@ -473,8 +555,8 @@ class MangaPage2Vertical:
                 'mask': panel.get('mask')
             })
         
-        # 順序推定
-        ordered_panels = panel_order_estimater(panels_for_order, img_width, img_height)
+        # 単一ページ用の順序推定を使用
+        ordered_panels = panel_order_estimater_single_page(panels_for_order, img_width, img_height)
         
         return ordered_panels
     
@@ -522,12 +604,22 @@ class MangaPage2Vertical:
             panel_info: コマ情報（バウンディングボックスとマスク）
         
         Returns:
-            panel_image: 切り出したコマ画像
+            panel_image: 切り出したコマ画像（None if invalid）
         """
         xmin = int(panel_info['xmin'])
         ymin = int(panel_info['ymin'])
         xmax = int(panel_info['xmax'])
         ymax = int(panel_info['ymax'])
+        
+        # バウンディングボックスの有効性チェック
+        h, w = image.shape[:2]
+        xmin = max(0, min(xmin, w - 1))
+        ymin = max(0, min(ymin, h - 1))
+        xmax = max(0, min(xmax, w))
+        ymax = max(0, min(ymax, h))
+        
+        if xmax <= xmin or ymax <= ymin:
+            return None  # 無効なバウンディングボックス
         
         # マスクがある場合はマスク領域のみを抽出
         if 'mask' in panel_info and panel_info['mask'] is not None:
@@ -633,13 +725,18 @@ class MangaPage2Vertical:
         id_to_mask = {info['id']: mask for info, mask in zip(panels_info, masks)}
         ordered_masks = [id_to_mask[panel['id']] for panel in ordered_panels]
         
-        # 7. 順序通りにコマを切り出し
+        # 7. 順序通りにコマを切り出し（無効なコマはスキップ）
         ordered_panel_images = []
-        for panel in ordered_panels:
+        valid_ordered_masks = []
+        valid_ordered_panels = []
+        for panel, mask in zip(ordered_panels, ordered_masks):
             panel_image = self.extract_panel_image(inpainted_image, panel)
-            ordered_panel_images.append(panel_image)
+            if panel_image is not None and panel_image.size > 0:
+                ordered_panel_images.append(panel_image)
+                valid_ordered_masks.append(mask)
+                valid_ordered_panels.append(panel)
         
-        return ordered_panel_images, balloons, ordered_masks, ordered_panels, balloon_mask
+        return ordered_panel_images, balloons, valid_ordered_masks, valid_ordered_panels, balloon_mask
     
     def create_comparison_image(
         self, 
@@ -733,8 +830,10 @@ class MangaPage2Vertical:
         image_output_dir.mkdir(parents=True, exist_ok=True)
         panels_dir = image_output_dir / "panels"
         balloons_dir = image_output_dir / "balloons"
+        masks_dir = image_output_dir / "masks"
         panels_dir.mkdir(exist_ok=True)
         balloons_dir.mkdir(exist_ok=True)
+        masks_dir.mkdir(exist_ok=True)
         
         # 画像読み込み
         image = cv2.imread(str(image_path))
@@ -798,10 +897,16 @@ class MangaPage2Vertical:
         original_path = image_output_dir / f"original{image_path.suffix}"
         cv2.imwrite(str(original_path), image)
         
-        # コマを個別に保存
+        # コマを個別に保存（空の画像はスキップ）
+        valid_panels = []
         for i, panel in enumerate(all_panels):
-            panel_path = panels_dir / f"panel_{i:03d}.png"
-            cv2.imwrite(str(panel_path), panel)
+            if panel is not None and panel.size > 0:
+                panel_path = panels_dir / f"panel_{i:03d}.png"
+                cv2.imwrite(str(panel_path), panel)
+                valid_panels.append(panel)
+            else:
+                print(f"  Warning: panel_{i:03d} is empty, skipping")
+        all_panels = valid_panels
         print(f"  Saved {len(all_panels)} panels to: {panels_dir}")
         
         # 吹き出しを個別に保存
@@ -809,6 +914,28 @@ class MangaPage2Vertical:
             balloon_path = balloons_dir / f"balloon_{i:03d}.png"
             cv2.imwrite(str(balloon_path), balloon['image'])
         print(f"  Saved {len(all_balloons)} balloons to: {balloons_dir}")
+        
+        # マスクを可視化して保存
+        for i, mask in enumerate(all_masks):
+            # バイナリマスクを可視化（白黒）
+            mask_vis = (mask * 255).astype(np.uint8)
+            mask_path = masks_dir / f"mask_{i:03d}.png"
+            cv2.imwrite(str(mask_path), mask_vis)
+            
+            # カラーオーバーレイ版も作成
+            if i < len(all_panels_info):
+                panel_info = all_panels_info[i]
+                xmin = int(panel_info['xmin'])
+                ymin = int(panel_info['ymin'])
+                xmax = int(panel_info['xmax'])
+                ymax = int(panel_info['ymax'])
+                
+                # マスク領域を切り出し
+                mask_crop = mask[ymin:ymax, xmin:xmax]
+                mask_crop_vis = (mask_crop * 255).astype(np.uint8)
+                mask_crop_path = masks_dir / f"mask_{i:03d}_crop.png"
+                cv2.imwrite(str(mask_crop_path), mask_crop_vis)
+        print(f"  Saved {len(all_masks)} masks to: {masks_dir}")
         
         # 縦読み漫画を作成
         if all_panels:

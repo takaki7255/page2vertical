@@ -50,12 +50,25 @@ def create_maskrcnn(num_classes=2, trainable_backbone_layers=3):
 
 
 def create_mask2former(num_classes=2, model_name='facebook/mask2former-swin-tiny-coco-instance'):
-    """Mask2Formerモデルを作成"""
-    from transformers import Mask2FormerForUniversalSegmentation
+    """Mask2Formerモデルを作成
+    
+    Args:
+        num_classes: 総クラス数（class_predictor.biasの形状と一致させる）
+        model_name: ベースモデル名
+    
+    Note:
+        Transformersのnum_labelsとnum_classesの関係はバージョンによって異なる場合がある。
+        チェックポイントのclass_predictor.biasの形状に合わせてモデルを作成する。
+    """
+    from transformers import Mask2FormerForUniversalSegmentation, Mask2FormerConfig
+    
+    # ベースモデルの設定を読み込み、num_labelsを上書き
+    config = Mask2FormerConfig.from_pretrained(model_name)
+    config.num_labels = num_classes
     
     model = Mask2FormerForUniversalSegmentation.from_pretrained(
         model_name,
-        num_labels=num_classes,
+        config=config,
         ignore_mismatched_sizes=True
     )
     
