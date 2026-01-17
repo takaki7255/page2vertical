@@ -15,6 +15,7 @@ import json
 from pathlib import Path
 import io
 import base64
+import textwrap
 
 
 def load_output_folder(folder_path: str):
@@ -225,75 +226,85 @@ def main():
             st.session_state.placements = []
             st.rerun()
     
-    # メインエリア：画像表示
-    col_main, col_orig = st.columns([2, 1])
+    # 右側固定パネル用のCSS
+    st.markdown("""
+    <style>
+    /* メインコンテンツエリア */
+    .main .block-container {
+        padding-right: 380px;
+        max-width: 100%;
+    }
     
-    with col_main:
-        st.subheader("縦並び画像（クリックで配置）")
-        
-        # 現在の配置を反映した画像を作成
-        preview_image = composite_balloons(vertical_image, st.session_state.placements, balloons)
-        
-        # 画像をクリック可能にして表示
-        # 表示幅を固定（元画像のサイズに応じてスケーリング）
-        display_width = min(800, preview_image.width)
-        scale_factor = display_width / preview_image.width
-        
-        if st.session_state.selected_balloon is not None:
-            st.info(f"🎈 吹き出し #{st.session_state.selected_balloon} を選択中 - 画像をクリックして配置")
-            
-            # クリック可能な画像表示
-            coords = streamlit_image_coordinates(
-                preview_image,
-                key=f"clickable_image_{st.session_state.current_folder}_{len(st.session_state.placements)}",
-                width=display_width
-            )
-            
-            if coords is not None:
-                # クリック座標を元の画像座標に変換
-                click_x = int(coords["x"] / scale_factor)
-                click_y = int(coords["y"] / scale_factor)
-                
-                # 新しい配置を追加
-                new_placement = {
-                    "balloon_idx": st.session_state.selected_balloon,
-                    "x": click_x,
-                    "y": click_y,
-                    "scale": scale
-                }
-                st.session_state.placements.append(new_placement)
-                st.success(f"✅ 配置しました: ({click_x}, {click_y})")
-                st.rerun()
-        else:
-            # 吹き出し未選択時は通常表示
-            st.image(preview_image, width='stretch')
-            st.info("👈 左のサイドバーから吹き出しを選択し、画像をクリックして配置")
+    /* 右側固定パネル */
+    .right-panel {
+        position: fixed;
+        right: 1rem;
+        top: 4rem;
+        width: 350px;
+        height: calc(100vh - 5rem);
+        overflow-y: auto;
+        background-color: #f8f9fa;
+        border: 1px solid #dee2e6;
+        border-radius: 8px;
+        padding: 1rem;
+        z-index: 100;
+        box-shadow: -2px 0 10px rgba(0,0,0,0.1);
+    }
     
-    with col_orig:
-        # オリジナル画像を固定表示（スクロールしても追従）
-        st.markdown("""
-        <style>
-        [data-testid="column"]:last-child {
-            position: sticky;
-            top: 0;
-            height: fit-content;
-            align-self: flex-start;
-        }
-        </style>
-        """, unsafe_allow_html=True)
-        
-        st.subheader("オリジナル画像（参照用）")
-        if original_image:
-            st.image(original_image, width='stretch')
-        else:
-            st.warning("オリジナル画像がありません")
+    .right-panel h3 {
+        margin-top: 0;
+        color: #333;
+        font-size: 1.2rem;
+        border-bottom: 2px solid #dee2e6;
+        padding-bottom: 0.5rem;
+    }
+    
+    .right-panel img {
+        width: 100%;
+        border-radius: 4px;
+        margin-bottom: 1rem;
+    }
+    
+    /* メイン画像の幅を制限 */
+    .main-image-container {
+        max-width: 500px;
+    }
+    
+    /* ボタンのスタイル調整 */
+    .stButton button {
+        width: 100%;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+    
+    # 右側固定パネルの内容を準備（HTMLで直接レンダリング）
+    # インデント無しの単一行HTMLで定義
+    panel_html = '<div class="right-panel"><h3>📖 操作ガイド</h3>'
+    
+    if st.session_state.selected_balloon is not None:
+        panel_html += f'<p style="background-color: #d1ecf1; padding: 10px; border-radius: 5px; color: #0c5460;">🎈 吹き出し #{st.session_state.selected_balloon} を選択中<br>👈 左の縦並び画像をクリックして配置</p>'
+    else:
+        panel_html += '<p style="background-color: #d1ecf1; padding: 10px; border-radius: 5px; color: #0c5460;">👈 左のサイドバーから吹き出しを選択し、縦並び画像をクリックして配置</p>'
+    
+    # オリジナル画像を表示
+    if original_image:
+        # 画像をbase64エンコード
+        buffered = io.BytesIO()
+        original_image.save(buffered, format="PNG")
+        img_str = base64.b64encode(buffered.getvalue()).decode()
+        panel_html += f'<h3>🖼️ オリジナル画像</h3><img src="data:image/png;base64,{img_str}" alt="Original Image">'
+    
+    panel_html += '</div>'
+    
+    # 右側パネルを表示
+    st.markdown(panel_html, unsafe_allow_html=True)
     
     # 保存ボタン
-    st.divider()
-    col_save1, col_save2, col_save3 = st.columns([1, 1, 2])
+    st.subheader("💾 保存")
+    col_save1, col_save2, col_save3 = st.columns(3)
     
     with col_save1:
-        if st.button("💾 画像を保存", type="primary"):
+        if st.button("💾 画像を保存", type="primary", use_container_width=True):
             # 最終画像を生成
             final_image = composite_balloons(vertical_image, st.session_state.placements, balloons)
             
@@ -304,7 +315,7 @@ def main():
             st.success(f"✅ 保存しました: {save_path}")
     
     with col_save2:
-        if st.button("📄 配置情報を保存"):
+        if st.button("📄 配置情報を保存", use_container_width=True):
             # 配置情報をJSONで保存
             save_data = {
                 "folder": selected_folder,
@@ -321,12 +332,49 @@ def main():
         # 配置情報の読み込み
         json_path = folder_path / "balloon_placements.json"
         if json_path.exists():
-            if st.button("📂 配置情報を読み込み"):
+            if st.button("📂 配置情報を読み込み", use_container_width=True):
                 with open(json_path, "r", encoding="utf-8") as f:
                     save_data = json.load(f)
                 st.session_state.placements = save_data.get("placements", [])
                 st.success("✅ 読み込みました")
                 st.rerun()
+    
+    st.divider()
+    
+    # メインエリア：縦並び画像表示
+    st.subheader("縦並び画像（クリックで吹き出しを配置）")
+    
+    # 現在の配置を反映した画像を作成
+    preview_image = composite_balloons(vertical_image, st.session_state.placements, balloons)
+    
+    # 画像をクリック可能にして表示（幅を500pxに固定）
+    display_width = 500
+    scale_factor = display_width / preview_image.width
+    
+    # クリック可能な画像表示
+    st.markdown('<div class="main-image-container">', unsafe_allow_html=True)
+    coords = streamlit_image_coordinates(
+        preview_image,
+        key=f"clickable_image_{st.session_state.current_folder}_{len(st.session_state.placements)}",
+        width=display_width
+    )
+    st.markdown('</div>', unsafe_allow_html=True)
+    
+    if coords is not None and st.session_state.selected_balloon is not None:
+        # クリック座標を元の画像座標に変換
+        click_x = int(coords["x"] / scale_factor)
+        click_y = int(coords["y"] / scale_factor)
+        
+        # 新しい配置を追加
+        new_placement = {
+            "balloon_idx": st.session_state.selected_balloon,
+            "x": click_x,
+            "y": click_y,
+            "scale": scale
+        }
+        st.session_state.placements.append(new_placement)
+        st.success(f"✅ 配置しました: ({click_x}, {click_y})")
+        st.rerun()
 
 
 if __name__ == "__main__":
