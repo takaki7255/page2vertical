@@ -1,323 +1,270 @@
-# 見開きページ漫画を縦読みに変換するツール
+# page2vertical_manga 引き継ぎ README
 
-このツールは、見開きページの漫画を縦スクロール形式に自動変換します。ディープラーニングを用いてコマとコマ順序を検出し、吹き出しの重なりを考慮しながら縦読み用に再配置します。
+このリポジトリは、漫画ページ画像に対して以下を行う Python プロジェクトです。
 
-## 主な機能
+- コマのインスタンスセグメンテーション
+- コマ順序推定
+- 吹き出し抽出
+- 吹き出し領域の除去補間（inpainting）
+- （main.py）縦読みレイアウト画像の生成
 
-- **コマ検出**: Mask R-CNNまたはMask2Formerを使用した高精度なコマ領域の検出
-- **コマ順序推定**: 見開きページの読み順を自動で判定
-- **吹き出し検出**: U-Netベースの吹き出し領域セグメンテーション
-- **インペインティング**: LAMAモデルによる背景補完（オプション）
-- **自動レイアウト**: 縦スクロール形式への最適な配置
+引き継ぎ向けに、実行方法・必要ファイル・チェックポイント配置をこの README に集約します。
 
-## 必要な環境
+## 1. 主要スクリプト
 
-- Python 3.8以上
-- PyTorch
-- CUDA対応GPU（推奨）
+- `main.py`
+  - 見開き/単ページを処理して、縦読み画像・比較画像・吹き出し画像などを出力。
+- `segment_panels_and_balloons.py`
+  - 吹き出し除去補間画像、コマセグメンテーション結果画像、抽出吹き出し画像を分けて保存する専用パイプライン。
+- `predict.py`
+  - コマのインスタンスセグメンテーション推論のみ（オーバーレイ保存）。
+- `balloon_editor.py`
+  - Streamlit UI。抽出した吹き出しを縦読み画像へ手動配置。
+- `train_maskrcnn.py`
+  - Mask R-CNN の学習。
+- `test_mask2former.py`, `test_mask2former_gray.py`, `test_unet.py`, `test_order_estimator.py`
+  - モデル評価/順序推定テスト。
 
-### 主要な依存ライブラリ
+## 2. 実行環境
+
+推奨:
+
+- Python 3.10 以上
+- PyTorch + torchvision
+- `transformers`
+- `opencv-python`
+- `numpy`, `Pillow`, `scipy`, `tqdm`
+
+最低限のインストール例:
 
 ```bash
 pip install torch torchvision
-pip install transformers
-pip install opencv-python
-pip install pillow
-pip install numpy
+pip install transformers opencv-python numpy pillow scipy tqdm
+pip install streamlit streamlit-image-coordinates
 ```
 
-### オプション: LAMAインペインティング
+`main.py` と `segment_panels_and_balloons.py` は `simple_lama_inpainting` を利用します。
+このリポジトリには `simple_lama_inpainting/` が含まれており、初回実行時に LAMA 重み（`big-lama.pt`）をダウンロードします。
+
+環境変数で固定したい場合:
+
+- `LAMA_MODEL=/absolute/path/to/big-lama.pt`
+- `LAMA_MODEL_URL=<download-url>`
+
+## 3. チェックポイント配置（重要）
+
+### 3.1 コマセグメンテーション用（`instance_models/`）
+
+現在、リポジトリ内に以下の学習済み重みが存在します。
+
+- `instance_models/mask2former_gray_20251201_121013/mask2former_gray_best.pt`
+- `instance_models/mask2former_3ch_20251201_121013/mask2former_best.pt`
+- `instance_models/maskrcnn_gray_20251201_121013/maskrcnn_gray_best.pt`
+- `instance_models/maskrcnn_3ch_20251201_121013/maskrcnn_3ch_best.pt`
+
+注意:
+
+- `main.py` と `segment_panels_and_balloons.py` のデフォルトは `./instance_models/mask2former_gray_best.pt` です。
+- 実ファイルはサブディレクトリ内にあるため、以下のどちらかが必要です。
+
+方法A: 実行時に明示指定
 
 ```bash
-pip install simple-lama-inpainting
+--panel-model ./instance_models/mask2former_gray_20251201_121013/mask2former_gray_best.pt
 ```
 
-## ディレクトリ構成
-
-```
-.
-├── main.py                      # メインスクリプト
-├── predict.py                   # 予測ユーティリティ
-├── panel_order_estimator.py     # コマ順序推定ロジック
-├── balloon_editor.py            # 吹き出し編集ツール
-├── lama_inpaint.py             # LAMAインペインティング
-├── models/                      # モデル定義
-│   ├── mask2former.py
-│   ├── mask2former_gray.py
-│   ├── maskrcnn.py
-│   ├── maskrcnn_gray.py
-│   └── unet*.py
-└── instance_models/             # 学習済みモデル
-    ├── mask2former_gray_best.pt
-    └── ...
-```
-
-## 使用方法
-
-### 基本的な使い方
+方法B: デフォルト名でシンボリックリンクを作成
 
 ```bash
-# 単一画像の変換
-python main.py --input image.jpg --output ./output/
-
-# フォルダ内の全画像を変換
-python main.py --input ./manga_pages/ --output ./output/
+ln -s ./mask2former_gray_20251201_121013/mask2former_gray_best.pt ./instance_models/mask2former_gray_best.pt
 ```
 
-### 主要なオプション
+### 3.2 吹き出しセグメンテーション用（`balloon_models/`）
 
-#### モデル設定
+- `main.py` と `segment_panels_and_balloons.py` のデフォルトは
+  `./balloon_models/real3000_dataset-unet-01.pt`。
+- このワークスペースでは `balloon_models/` ディレクトリが未配置です。
+
+対応:
+
+- `balloon_models/real3000_dataset-unet-01.pt` を配置する。
+- もしくは `--balloon-model /path/to/your_unet_checkpoint.pt` で指定する。
+
+モデル未指定またはロード失敗時は、`main.py` 内の簡易白色領域検出へフォールバックします（精度は低下）。
+
+## 4. 使い方
+
+## 4.1 吹き出し除去補間 + コマ分割 + 吹き出し抽出（推奨）
+
+`segment_panels_and_balloons.py` を使います。
 
 ```bash
-# コマ検出モデルの指定
-python main.py --input image.jpg --output ./output/ \
-  --panel-model ./instance_models/mask2former_gray_best.pt \
-  --panel-model-type mask2former
-
-# モデルタイプ: maskrcnn または mask2former
-# 入力タイプ: 3ch（カラー）または gray（グレースケール）
-python main.py --input image.jpg --output ./output/ \
-  --input-type gray
+python segment_panels_and_balloons.py \
+  --input ./test_images \
+  --output ./segmentation_output \
+  --panel-model ./instance_models/mask2former_gray_20251201_121013/mask2former_gray_best.pt \
+  --panel-model-type mask2former \
+  --input-type gray \
+  --balloon-model ./balloon_models/real3000_dataset-unet-01.pt
 ```
 
-#### 検出パラメータ
+主な出力（画像ごと）:
 
-```bash
-# スコア閾値の調整（デフォルト: 0.5）
-python main.py --input image.jpg --output ./output/ \
-  --score-threshold 0.6
-
-# コマ間の余白比率（デフォルト: 0.3）
-python main.py --input image.jpg --output ./output/ \
-  --panel-margin-ratio 0.4
-
-# 小さいコマの最小幅比率（デフォルト: 0.8）
-python main.py --input image.jpg --output ./output/ \
-  --min-width-ratio 0.7
+```text
+segmentation_output/
+  <image_stem>/
+    inpainted/no_balloons.png
+    panel_segmentation/panels_overlay.png
+    panel_segmentation/panel_mask_000.png ...
+    balloons/balloon_000.png ...
+    balloons/balloon_mask.png
+    result.json
 ```
 
-#### 画像処理オプション
+全体サマリ:
 
-```bash
-# マスクのスムージングを有効化
-python main.py --input image.jpg --output ./output/ \
-  --smooth-mask --smooth-kernel-size 5
+- `segmentation_output/summary.json`
 
-# 吹き出しマスクの膨張（切れ防止、デフォルト: 2）
-python main.py --input image.jpg --output ./output/ \
-  --balloon-dilate 3
+## 4.2 見開きを縦読みへ変換
 
-# LAMAインペインティングの無効化
-python main.py --input image.jpg --output ./output/ \
-  --no-inpaint
-```
-
-#### 吹き出し検出モデル
-
-```bash
-# 吹き出し検出モデルの指定
-python main.py --input image.jpg --output ./output/ \
-  --balloon-model ./balloon_models/model.pt \
-  --balloon-img-size 384 512
-```
-
-### 完全なコマンド例
+`main.py` を使います。
 
 ```bash
 python main.py \
-  --input ./test_images/ \
-  --output ./output/ \
-  --panel-model ./instance_models/mask2former_gray_best.pt \
+  --input ./test_images \
+  --output ./output_vertical \
+  --panel-model ./instance_models/mask2former_gray_20251201_121013/mask2former_gray_best.pt \
   --panel-model-type mask2former \
   --input-type gray \
-  --score-threshold 0.5 \
-  --panel-margin-ratio 0.3 \
-  --smooth-mask \
-  --balloon-dilate 2
+  --balloon-model ./balloon_models/real3000_dataset-unet-01.pt \
+  --score-threshold 0.5
 ```
 
-## 出力
+主な出力（画像ごと）:
 
-変換が完了すると、以下のファイルが出力されます：
-
-```
-output/
-├── conversion_summary.json      # 全体のサマリー
-└── [画像名]/
-    ├── vertical_manga.jpg       # 縦読み変換後の画像
-    ├── panels_overlay.jpg       # コマ検出結果のオーバーレイ
-    ├── metadata.json            # 変換メタデータ
-    └── panels/                  # 個別コマ画像（デバッグ用）
-        ├── panel_001.jpg
-        ├── panel_002.jpg
-        └── ...
+```text
+output_vertical/
+  <image_stem>/
+    original.<ext>
+    vertical.png
+    comparison_page.png (または right/left)
+    panels/panel_000.png ...
+    balloons/balloon_000.png ...
+    masks/mask_000.png ...
+    meta.json
 ```
 
-### metadata.json の内容
+全体サマリ:
 
-```json
-{
-  "input_image": "画像パス",
-  "output_dir": "出力ディレクトリ",
-  "num_panels": "検出されたコマ数",
-  "panel_order": "コマの順序情報",
-  "processing_time": "処理時間（秒）"
-}
-```
+- `output_vertical/conversion_summary.json`
 
-## その他のツール
+## 4.3 セグメンテーション推論のみ
 
-### 吹き出し配置エディタ（Streamlit UI）
-
-縦読み変換後の画像に対して、吹き出しを手動で配置できるインタラクティブなUIです。
-
-#### 必要な追加ライブラリ
+`predict.py` を使います。
 
 ```bash
-pip install streamlit
-pip install streamlit-image-coordinates
+python predict.py \
+  --model mask2former \
+  --weights ./instance_models/mask2former_gray_20251201_121013/mask2former_gray_best.pt \
+  --input ./test_images \
+  --input-type gray \
+  --output ./predictions
 ```
 
-#### 起動方法
+## 4.4 吹き出し手動配置 UI
 
 ```bash
 streamlit run balloon_editor.py
 ```
 
-ブラウザが自動的に開き、UIが表示されます（通常は http://localhost:8501）。
+デフォルトでは `./output_m2f` を見に行くため、必要に応じて UI 側で出力ディレクトリを変更してください。
 
-#### 使い方
+## 5. 学習・評価のデータ形式
 
-1. **フォルダ選択**
-   - サイドバーで「出力ベースディレクトリ」を指定（デフォルト: `./output_m2f`）
-   - ドロップダウンから処理済みの画像フォルダを選択
+### 5.1 Mask R-CNN 学習（`train_maskrcnn.py`）
 
-2. **吹き出しの選択**
-   - サイドバーに表示される吹き出しのサムネイルをクリック
-   - サイズスライダーで吹き出しの大きさを調整（0.5〜2.0倍）
+想定ルート:
 
-3. **吹き出しの配置**
-   - メイン画像（縦並び画像）の任意の位置をクリック
-   - 選択中の吹き出しが配置されます
-   - 配置済みリストから削除も可能
+- `--root <dataset_root>`
+- `train/`, `val/` があれば split として使用。なければ `<dataset_root>` 直下を使用。
 
-4. **保存**
-   - 「💾 画像を保存」: 吹き出しを合成した最終画像を保存（`vertical_with_balloons.png`）
-   - 「📄 配置情報を保存」: 配置情報をJSON形式で保存（`balloon_placements.json`）
-   - 「📂 配置情報を読み込み」: 以前に保存した配置情報を読み込み
+必要構造（例）:
 
-#### 機能
+```text
+<dataset_root>/
+  train/
+    images/*.jpg|png
+    instance_masks/*_instance.png
+    lsd/*_lsd.png          # input-type=3ch の場合
+    sdf/*_sdf.png          # input-type=3ch の場合
+  val/
+    ... 同様 ...
+```
 
-- **リアルタイムプレビュー**: 配置した吹き出しが即座に反映
-- **オリジナル画像参照**: 右側にオリジナル画像を表示（スクロール追従）
-- **配置の編集**: 配置済みリストから個別に削除可能
-- **配置情報の保存/読み込み**: 作業の中断・再開が可能
-
-### 予測のみ（オーバーレイ画像生成）
+実行例:
 
 ```bash
-# Mask R-CNN
-python predict.py \
-  --model maskrcnn \
-  --weights ./instance_models/maskrcnn_gray_best.pt \
-  --input image.jpg
-
-# Mask2Former
-python predict.py \
-  --model mask2former \
-  --weights ./instance_models/mask2former_gray_best.pt \
-  --input image.jpg \
-  --input-type gray
+python train_maskrcnn.py \
+  --root ./frame_dataset/1000_instance \
+  --input-type gray \
+  --epochs 50 \
+  --batch 4 \
+  --output ./panel_models/maskrcnn_gray
 ```
 
-### モデルの学習
+### 5.2 U-Net 評価（`test_unet.py`）
+
+必要構造:
+
+```text
+<data-root>/
+  images/*.jpg|png
+  masks/*_mask.png
+```
+
+実行例:
 
 ```bash
-# Mask R-CNNの学習
-python train_maskrcnn.py --config config.yaml
-
-# その他のテストスクリプト
-python test_mask2former.py
-python test_order_estimator.py
+python test_unet.py \
+  --model-path ./balloon_models/real3000_dataset-unet-01.pt \
+  --data-root ./test_dataset \
+  --result-dir ./test_results
 ```
 
-## トラブルシューティング
+## 6. 既知の注意点
 
-### コマが正しく検出されない
+- `main.py`/`segment_panels_and_balloons.py` のデフォルト `--panel-model` は、現状配置の実ファイルパスと異なります。
+  - 実行時に `--panel-model` を明示指定するのが安全です。
+- `balloon_models/` はこのワークスペースに存在しないため、別途配置が必要です。
+- `test_mask2former.py` と `test_mask2former_gray.py` は
+  `utils.instance_metrics` を import しますが、現状トップレベル `utils/` は見当たりません。
+  - これら評価スクリプトを使う場合は、該当モジュールを追加するか import を修正してください。
 
-- `--score-threshold` を下げてみてください（例: 0.3）
-- 異なるモデル（mask2former / maskrcnn）を試してください
-- `--input-type` を変更してみてください（gray / 3ch）
+## 7. クイックスタート（最短）
 
-### コマの順序がおかしい
+1. コマモデルを指定して、吹き出し抽出・補間パイプラインを実行。
 
-- `panel_order_estimator.py` のロジックを確認してください
-- 見開きページが正しく認識されているか確認してください
-
-### 吹き出しが切れる
-
-- `--balloon-dilate` の値を大きくしてください（例: 5）
-- 吹き出し検出モデルを改善してください
-
-### メモリ不足エラー
-
-- `--img-size` を小さくしてください（例: 256 384）
-- バッチ処理を減らしてください
-
-## パフォーマンスの最適化
-
-- GPU使用を推奨（CUDA対応のPyTorchをインストール）
-- 大量の画像を処理する場合は、バッチ処理を検討
-- `--no-inpaint` で高速化（品質は若干低下）
-
-## 既知の問題と今後の課題
-
-### balloon_editor.py の既知の問題
-
-#### 吹き出しのサイズ調整の制限
-現在、吹き出しサイズはスライダーで0.5～2.0倍の範囲に制限されています。
-- **今後の改善**: サイズ調整の上限を撤廃し、より大きな吹き出しに対応する機能を追加予定
-
-#### 吹き出しの枠線やエッジの品質問題
-吹き出しのマスク領域を抽出する際、以下の問題が発生することがあります：
-- 枠線が消えて見える場合がある
-- 抽出されたエッジがガタガタになっている
-- アンチエイリアシングによる境界の不自然さ
-
-**原因**: 吹き出しのマスク領域を厳密に抽出しているため、枠線部分の細部が失われやすい
-
-**今後の改善予定**:
-1. マスク領域から**少し広めに抽出**（パディングを追加）
-2. **スムージング処理**を実装（メディアンフィルタやガウシアンフィルタの適用）
-3. **エッジの補強**（膨張・収縮操作による枠線の復元）
-4. 抽出時の**品質調整オプション**を追加
-
-実装予定のコード例（参考）:
-```python
-# マスク領域をパディング付きで抽出
-def extract_balloon_with_smoothing(mask, padding=5, kernel_size=5):
-    # パディングを追加
-    y, x = np.where(mask > 0)
-    y_min, y_max = max(0, y.min() - padding), min(mask.shape[0], y.max() + padding)
-    x_min, x_max = max(0, x.min() - padding), min(mask.shape[1], x.max() + padding)
-    
-    # スムージング処理
-    smoothed = cv2.medianBlur(mask[y_min:y_max, x_min:x_max], kernel_size)
-    
-    return smoothed, (x_min, y_min)
+```bash
+python segment_panels_and_balloons.py \
+  --input ./test_images \
+  --output ./segmentation_output \
+  --panel-model ./instance_models/mask2former_gray_20251201_121013/mask2former_gray_best.pt \
+  --panel-model-type mask2former \
+  --input-type gray \
+  --balloon-model ./balloon_models/real3000_dataset-unet-01.pt
 ```
 
-## 技術詳細
+2. 結果確認:
 
-### アーキテクチャ
+- 吹き出し除去補間画像: `segmentation_output/<stem>/inpainted/no_balloons.png`
+- コマ分割結果: `segmentation_output/<stem>/panel_segmentation/panels_overlay.png`
+- 抽出吹き出し: `segmentation_output/<stem>/balloons/balloon_*.png`
 
-1. **コマ検出**: Mask R-CNN / Mask2Former によるインスタンスセグメンテーション
-2. **吹き出し検出**: U-Netベースのセマンティックセグメンテーション
-3. **順序推定**: ヒューリスティックベースのアルゴリズム
-4. **背景補完**: LAMA（Large Mask Inpainting）
-5. **レイアウト生成**: 幅と高さを考慮した最適配置
+## 8. トラブルシュート
 
-### モデル入力形式
-
-- **3ch**: RGB 3チャンネル画像
-- **gray**: グレースケール画像（3チャンネルに複製）
+- `FileNotFoundError: ...mask2former_gray_best.pt` が出る場合:
+  - `--panel-model` にサブディレクトリ内の実ファイルを指定してください。
+- `balloon model ... not found` が出る場合:
+  - `--balloon-model` で有効な `.pt` を指定するか、`balloon_models/` に配置してください。
+- LAMA の初回実行で遅い場合:
+  - モデルダウンロードが走っています。2回目以降はキャッシュが使われます。
